@@ -8,13 +8,15 @@ import {
   ViewChild,
 } from '@angular/core';
 import cytoscape from 'cytoscape';
-import { IsolationResult, Topology } from './models';
+import { IsolationResult, Topology, WorkOrderDetail } from './models';
 
 /**
  * Cytoscape.js 拓扑渲染：
  * - 节点：来源 / 目标设备 / 必要供给点 / 普通节点
  * - 边：管段（按保存的名义方向显示箭头），旁路使用虚线
  * - 高亮：候选关闭阀（红）、残余/绕回供给路径（橙/绿）
+ * - 工单模式：计划关阀（红）、已模拟关闭（灰）、当前供给路径（青）、
+ *   未隔离时的残余路径（橙）——全部来自工单冻结快照 + 模拟阀态的复核结果
  */
 @Component({
   selector: 'app-network-graph',
@@ -34,6 +36,7 @@ import { IsolationResult, Topology } from './models';
 export class NetworkGraphComponent implements AfterViewInit, OnChanges, OnDestroy {
   @Input() topology: Topology | null = null;
   @Input() result: IsolationResult | null = null;
+  @Input() workOrder: WorkOrderDetail | null = null;
 
   @ViewChild('cy') cyHost!: ElementRef<HTMLDivElement>;
 
@@ -55,10 +58,11 @@ export class NetworkGraphComponent implements AfterViewInit, OnChanges, OnDestro
   }
 
   private render(): void {
-    if (!this.topology) {
+    // 工单模式下渲染工单冻结的拓扑快照，保证刷新/恢复后重放的是原始拓扑状态
+    const topo = this.workOrder?.topology_snapshot ?? this.topology;
+    if (!topo) {
       return;
     }
-    const topo = this.topology;
 
     const elements: cytoscape.ElementDefinition[] = [
       ...topo.nodes.map((n) => ({
@@ -161,6 +165,17 @@ export class NetworkGraphComponent implements AfterViewInit, OnChanges, OnDestro
           },
         },
         {
+          selector: 'edge.done',
+          style: {
+            'line-color': '#94a3b8',
+            'target-arrow-color': '#94a3b8',
+            width: 6,
+            'line-style': 'dashed',
+            'line-dash-pattern': [2, 4],
+            color: '#94a3b8',
+          },
+        },
+        {
           selector: 'edge.residual',
           style: {
             'line-color': '#fb923c',
@@ -200,8 +215,8 @@ export class NetworkGraphComponent implements AfterViewInit, OnChanges, OnDestro
   private applyHighlights(): void {
     const cy = this.cy;
     const result = this.result;
-    const topo = this.topology;
-    if (!cy || !result || !topo) {
+    const topo = this.workOrder?.topology_snapshot ?? this.topology;
+    if (!cy || !topo) {
       return;
     }
 
@@ -210,6 +225,40 @@ export class NetworkGraphComponent implements AfterViewInit, OnChanges, OnDestro
       if (s.valve_id) {
         edgeByValve.set(s.valve_id, s.id);
       }
+    }
+
+    const markPath = (nodePath: string[], cls: string) => {
+      nodePath.forEach((n) => cy.$(`node#${n}`).addClass('onpath'));
+      for (let i = 0; i < nodePath.length - 1; i++) {
+        cy.edges(`[source = "${nodePath[i]}"][target = "${nodePath[i + 1]}"]`).addClass(cls);
+        cy.edges(`[source = "${nodePath[i + 1]}"][target = "${nodePath[i]}"]`).addClass(cls);
+      }
+    };
+
+    // 工单模式优先：冻结快照 + 模拟阀态的步骤/路径展示
+    const wo = this.workOrder;
+    if (wo) {
+      cy.$(`node#${wo.target_id}`).addClass('hl-target');
+      const closed = new Set(wo.live_check.closed_valves);
+      for (const vid of wo.planned_close_valves) {
+        const eid = edgeByValve.get(vid);
+        if (eid) {
+          cy.$(`edge#${eid}`).addClass(closed.has(vid) ? 'done' : 'close');
+        }
+      }
+      for (const path of Object.values(wo.live_check.supply_paths)) {
+        if (path) {
+          markPath(path, 'supply');
+        }
+      }
+      if (!wo.live_check.isolated && wo.live_check.residual_path) {
+        markPath(wo.live_check.residual_path, 'residual');
+      }
+      return;
+    }
+
+    if (!result) {
+      return;
     }
 
     // 目标设备
@@ -228,25 +277,14 @@ export class NetworkGraphComponent implements AfterViewInit, OnChanges, OnDestro
         if (!path) {
           continue;
         }
-        path.forEach((n) => cy.$(`node#${n}`).addClass('onpath'));
-        for (let i = 0; i < path.length - 1; i++) {
-          cy.edges(`[source = "${path[i]}"][target = "${path[i + 1]}"]`).addClass('supply');
-          cy.edges(`[source = "${path[i + 1]}"][target = "${path[i]}"]`).addClass('supply');
-        }
+        markPath(path, 'supply');
       }
     } else if (!result.feasible) {
-      const mark = (nodePath: string[], cls: string) => {
-        nodePath.forEach((n) => cy.$(`node#${n}`).addClass('onpath'));
-        for (let i = 0; i < nodePath.length - 1; i++) {
-          cy.edges(`[source = "${nodePath[i]}"][target = "${nodePath[i + 1]}"]`).addClass(cls);
-          cy.edges(`[source = "${nodePath[i + 1]}"][target = "${nodePath[i]}"]`).addClass(cls);
-        }
-      };
       if (result.residual_path) {
-        mark(result.residual_path.nodes, 'residual');
+        markPath(result.residual_path.nodes, 'residual');
       }
       if (result.locked_witness_path) {
-        mark(result.locked_witness_path.nodes, 'witness');
+        markPath(result.locked_witness_path.nodes, 'witness');
       }
     }
   }

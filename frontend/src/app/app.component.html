@@ -56,10 +56,20 @@
 
     <!-- 中：拓扑图 -->
     <main class="panel graph-panel">
-      <h2>管网拓扑（箭头=介质名义方向，紫虚线=旁路，★=必要供给点）</h2>
-      <app-network-graph [topology]="topology()" [result]="result()" />
+      <h2>
+        管网拓扑（箭头=介质名义方向，紫虚线=旁路，★=必要供给点）
+        @if (selectedWo(); as wo) {
+          <span class="wo-view-tag">工单视图：{{ wo.id }}</span>
+        }
+      </h2>
+      <app-network-graph
+        [topology]="topology()"
+        [result]="result()"
+        [workOrder]="selectedWo()"
+      />
       <div class="legend">
-        <span><i class="sw close"></i> 候选关闭阀</span>
+        <span><i class="sw close"></i> 候选/计划关闭阀</span>
+        <span><i class="sw done"></i> 已模拟关闭</span>
         <span><i class="sw supply"></i> 方案后供给路径</span>
         <span><i class="sw residual"></i> 残余连通路径</span>
         <span><i class="sw witness"></i> 经锁定阀的见证路径</span>
@@ -107,6 +117,11 @@
               }
             </ul>
           }
+
+          <button class="primary wo-create" [disabled]="woBusy()" (click)="createWorkOrder()">
+            由推荐方案生成演练工单
+          </button>
+          <p class="hint">工单冻结当前方案与约束，按步骤模拟关阀→核验→复位。</p>
         } @else {
           <div class="bad">✗ 当前锁定下找不到可行方案</div>
           <p class="reason">{{ r.infeasible_reason }}</p>
@@ -154,6 +169,189 @@
       }
     </aside>
   </div>
+
+  <!-- 隔离演练工单 -->
+  <section class="panel wo-panel">
+    <h2>隔离演练工单</h2>
+    <p class="hint">
+      工单把一次可行方案冻结为可暂停、可核验、可恢复的演练流程；<b>仅模拟流程，
+      不写入真实阀门状态、不连接真实控制系统</b>。每一步都带幂等标识与前置状态，
+      重复/乱序事件会被安全拒绝并保留审计；执行中锁定、拓扑或供给约束变化会使工单过期。
+    </p>
+
+    <div class="wo-layout">
+      <!-- 工单列表 -->
+      <div class="wo-list">
+        <div class="wo-list-head">
+          <h3>工单列表（{{ workOrders().length }}）</h3>
+          <button class="ghost" (click)="reloadWorkOrders()">刷新</button>
+        </div>
+        @if (!workOrders().length) {
+          <p class="hint">暂无工单：先计算可行方案，再点击“由推荐方案生成演练工单”。</p>
+        }
+        <ul>
+          @for (w of workOrders(); track w.id) {
+            <li
+              [class.active]="selectedWo()?.id === w.id"
+              [class.expired]="w.status === 'expired'"
+              (click)="selectWo(w.id)"
+            >
+              <div class="wo-row">
+                <b>{{ w.id }}</b>
+                <span class="badge st-{{ w.status }}">{{ statusLabels[w.status] }}</span>
+              </div>
+              <div class="wo-meta">
+                {{ w.title }} ｜ 进度 {{ w.steps_done }}/{{ w.steps_total }}
+              </div>
+              <div class="wo-meta">关阀：{{ w.planned_close_valves.join('、') || '无' }}</div>
+            </li>
+          }
+        </ul>
+      </div>
+
+      <!-- 工单详情 -->
+      <div class="wo-detail">
+        @if (selectedWo(); as wo) {
+          <div class="wo-detail-head">
+            <h3>
+              {{ wo.title }}
+              <span class="badge st-{{ wo.status }}">{{ statusLabels[wo.status] }}</span>
+            </h3>
+            <button class="ghost" (click)="deselectWo()">退出工单视图</button>
+          </div>
+
+          @if (wo.status === 'expired') {
+            <div class="bad">✗ 工单已过期：{{ wo.expired_reason }}</div>
+          }
+
+          <div class="wo-frozen">
+            <div><b>冻结目标：</b>{{ wo.target_id }}（{{ nodeName(wo.target_id) }}）</div>
+            <div><b>必要供给点：</b>{{ wo.essentials.join('、') }}</div>
+            <div><b>所选方案：</b>{{ wo.planned_close_valves.join('、') || '（空集合）' }}</div>
+            <div>
+              <b>冻结锁定：</b>
+              @for (vid of woValves(wo); track vid) {
+                @if (wo.lock_snapshot[vid]) {
+                  <code class="lock-tag">{{ vid }}</code>
+                }
+              }
+              {{ hasLockedValves(wo) ? '' : '（创建时无锁定阀）' }}
+            </div>
+            <div><b>约束指纹：</b><code>{{ wo.fingerprint.slice(0, 16) }}…</code></div>
+          </div>
+
+          <!-- 当前复核：核验前即可见目标隔离与必要供给路径 -->
+          <h3>当前模拟状态（NetworkX 复核）</h3>
+          <div class="wo-check">
+            @if (wo.live_check.isolated) {
+              <span class="ok-chip">✓ 目标 {{ wo.target_id }} 已隔离</span>
+            } @else {
+              <span class="bad-chip">✗ 目标尚未隔离</span>
+            }
+            @if (wo.live_check.all_essentials_supplied) {
+              <span class="ok-chip">✓ 必要供给点全部可达</span>
+            } @else {
+              <span class="bad-chip">✗ 存在断供风险</span>
+            }
+            <span class="chip">已模拟关闭：{{ wo.live_check.closed_valves.join('、') || '无' }}</span>
+          </div>
+          @for (p of wo.essentials; track p) {
+            <div class="supply">
+              ★ <b>{{ p }}</b> 来源路径：
+              <code>{{ wo.live_check.supply_paths[p]?.join(' → ') || '—（断供）' }}</code>
+            </div>
+          }
+          @if (wo.live_check.residual_path; as rp) {
+            <div class="supply residual-note">
+              残余连通路径：<code>{{ rp.join(' → ') }}</code>
+            </div>
+          }
+
+          <!-- 计划步骤与证据 -->
+          <h3>计划步骤</h3>
+          <ol class="steps">
+            @for (s of wo.steps; track s.seq) {
+              <li
+                [class.done]="s.status === 'done'"
+                [class.next]="wo.next_step?.seq === s.seq && wo.status !== 'expired'"
+              >
+                <div class="step-line">
+                  <span class="step-state">{{ s.status === 'done' ? '✓' : '○' }}</span>
+                  <b>步骤 {{ s.seq }}</b>
+                  {{ stepKindLabels[s.kind] }}
+                  @if (s.valve_id) {
+                    <code>{{ s.valve_id }}</code>（{{ valveName(s.valve_id) }}）
+                  }
+                  @if (wo.next_step?.seq === s.seq && wo.status !== 'expired') {
+                    <em class="next-tag">← 下一步</em>
+                  }
+                </div>
+                @if (s.evidence; as ev) {
+                  <div class="evidence">
+                    @if (s.kind === 'close_valve') {
+                      模拟关闭后：{{ ev['isolated_after'] ? '目标已隔离' : '目标未隔离' }}，
+                      必要供给{{ ev['all_essentials_supplied_after'] ? '正常' : '断供' }}
+                    }
+                    @if (s.kind === 'verify') {
+                      核验通过：目标隔离 ✓，必要供给 ✓（NetworkX 复核冻结快照）
+                    }
+                    @if (s.kind === 'restore_valve') {
+                      已按冻结阀态复位为{{ ev['restored_to_frozen_state'] ? '打开' : '关闭' }}
+                    }
+                    <span class="ev-note">{{ ev['note'] }}</span>
+                  </div>
+                }
+              </li>
+            }
+          </ol>
+
+          <!-- 操作 -->
+          <div class="wo-actions">
+            @if (wo.status === 'draft') {
+              <button class="primary" [disabled]="woBusy()" (click)="woStart()">开始执行</button>
+            }
+            @if (canStep(wo)) {
+              <button class="primary" [disabled]="woBusy()" (click)="woNextStep()">
+                {{ nextStepLabel() }}
+              </button>
+            }
+            @if (canPause(wo)) {
+              <button [disabled]="woBusy()" (click)="woPause()">暂停</button>
+            }
+            @if (wo.status === 'paused') {
+              <button class="primary" [disabled]="woBusy()" (click)="woResume()">恢复</button>
+            }
+            <button class="ghost" (click)="selectWo(wo.id)">刷新工单</button>
+          </div>
+
+          <!-- 审计 -->
+          <h3>持久化审计（{{ wo.audit.length }} 条）</h3>
+          <ul class="audit">
+            @for (e of wo.audit; track e.id) {
+              <li [class]="'oc-' + e.outcome">
+                <span class="a-outcome">{{ outcomeLabels[e.outcome] ?? e.outcome }}</span>
+                <b>{{ actionLabels[e.action] ?? e.action }}</b>
+                @if (e.detail['step']; as st) {
+                  @if (st) {
+                    步骤{{ st.seq }}
+                  }
+                }
+                @if (e.idempotency_key) {
+                  <code class="a-key">{{ e.idempotency_key }}</code>
+                }
+                @if (e.outcome === 'rejected' || e.outcome === 'expired') {
+                  <div class="a-reason">{{ e.detail['reason'] }}</div>
+                }
+              </li>
+            }
+          </ul>
+          <p class="hint">{{ wo.disclaimer }}</p>
+        } @else {
+          <p class="hint">从左侧选择一个工单查看步骤、路径与审计；或由一个可行方案生成新工单。</p>
+        }
+      </div>
+    </div>
+  </section>
 
   <footer>
     演示拓扑：来源 SRC — N1 — N2 — 设备T — N3；N2-BP-N3 旁路与 T 并联；

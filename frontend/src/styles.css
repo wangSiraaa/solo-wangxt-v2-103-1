@@ -275,3 +275,259 @@ footer {
   padding: 8px 12px;
   border-radius: 8px;
 }
+
+/* ---------------- 隔离演练工单 ---------------- */
+
+.wo-panel {
+  margin-top: 16px;
+}
+
+.wo-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 16px;
+  margin-top: 10px;
+}
+
+@media (max-width: 1000px) {
+  .wo-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.wo-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.wo-list ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.wo-list li {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.wo-list li:hover {
+  background: #f8fafc;
+}
+
+.wo-list li.active {
+  border-color: #0f766e;
+  box-shadow: 0 0 0 1px #0f766e inset;
+}
+
+.wo-list li.expired {
+  opacity: 0.75;
+  border-style: dashed;
+}
+
+.wo-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.wo-meta {
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.wo-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.wo-detail-head h3 {
+  margin: 0;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 2px 10px;
+  border: 1px solid transparent;
+  vertical-align: middle;
+}
+
+.st-draft { background: #e2e8f0; color: #334155; }
+.st-executing { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; }
+.st-paused { background: #fef9c3; color: #a16207; border-color: #fde047; }
+.st-pending_verification { background: #ffedd5; color: #c2410c; border-color: #fdba74; }
+.st-restoring { background: #e0e7ff; color: #4338ca; border-color: #a5b4fc; }
+.st-closed { background: #dcfce7; color: #166534; border-color: #86efac; }
+.st-expired { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+
+.wo-frozen {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 4px 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  margin: 10px 0;
+}
+
+.lock-tag {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-right: 4px;
+}
+
+.wo-check {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.ok-chip,
+.bad-chip,
+.chip {
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.ok-chip { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+.bad-chip { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+.chip { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+
+.residual-note code {
+  background: #fff7ed;
+}
+
+.steps {
+  margin: 6px 0;
+  padding-left: 4px;
+  list-style: none;
+  font-size: 13px;
+}
+
+.steps li {
+  border-left: 3px solid #e2e8f0;
+  padding: 6px 0 6px 12px;
+  margin-left: 6px;
+}
+
+.steps li.done {
+  border-left-color: #16a34a;
+  color: #166534;
+}
+
+.steps li.next {
+  border-left-color: #0f766e;
+  background: #f0fdfa;
+}
+
+.step-state {
+  display: inline-block;
+  width: 18px;
+  font-weight: 700;
+}
+
+.next-tag {
+  color: #0f766e;
+  font-style: normal;
+  font-size: 11px;
+  margin-left: 6px;
+}
+
+.evidence {
+  font-size: 12px;
+  color: #475569;
+  margin-top: 2px;
+}
+
+.ev-note {
+  display: block;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.wo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.wo-create {
+  margin-top: 10px;
+  width: 100%;
+}
+
+.audit {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  max-height: 260px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.audit li {
+  border-bottom: 1px dashed #e2e8f0;
+  padding: 4px 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.a-outcome {
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 0 6px;
+}
+
+.oc-applied .a-outcome { background: #dcfce7; color: #166534; }
+.oc-duplicate .a-outcome { background: #e0e7ff; color: #4338ca; }
+.oc-rejected .a-outcome { background: #fee2e2; color: #991b1b; }
+.oc-expired .a-outcome { background: #7f1d1d; color: #fecaca; }
+
+.a-key {
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.a-reason {
+  width: 100%;
+  color: #991b1b;
+  font-size: 11px;
+}
+
+.wo-view-tag {
+  font-size: 11px;
+  color: #0f766e;
+  border: 1px solid #99f6e4;
+  background: #f0fdfa;
+  border-radius: 6px;
+  padding: 2px 8px;
+  margin-left: 8px;
+}
+
+.sw.done {
+  background: #94a3b8;
+}

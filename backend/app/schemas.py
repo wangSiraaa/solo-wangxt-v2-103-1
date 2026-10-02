@@ -88,3 +88,23 @@ class IsolationOut(BaseModel):
     locked_witness_path: dict[str, Any] | None = None
     infeasible_reason: str | None = None
     unconstrained_best: dict[str, Any] | None = None
+
+
+class WorkOrderCreateIn(BaseModel):
+    target_id: str = Field("T", description="待隔离目标设备节点 id")
+    close_valves: list[str] = Field(..., description="所选方案：计划关闭的阀门 id 列表")
+    title: str | None = Field(None, description="工单标题（可选）")
+
+
+class WorkOrderEventIn(BaseModel):
+    """工单事件：每个动作都必须携带幂等标识与前置状态。
+
+    action: start / close_valve / verify / restore_valve / pause / resume
+    expected: 客户端看到的当前状态，如 {"status": "executing", "step_seq": 1,
+    "valve_is_open": true}；与服务端实际不符时安全拒绝（409）并落审计。
+    """
+
+    action: str = Field(..., description="start/close_valve/verify/restore_valve/pause/resume")
+    valve_id: str | None = Field(None, description="close_valve/restore_valve 时的阀门 id")
+    idempotency_key: str = Field(..., min_length=1, max_length=128, description="幂等标识")
+    expected: dict[str, Any] = Field(..., description="前置状态声明")
