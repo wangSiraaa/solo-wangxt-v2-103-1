@@ -88,3 +88,27 @@ class IsolationOut(BaseModel):
     locked_witness_path: dict[str, Any] | None = None
     infeasible_reason: str | None = None
     unconstrained_best: dict[str, Any] | None = None
+
+
+class WorkOrderCreateIn(BaseModel):
+    target_id: str = Field("T", description="待隔离目标设备节点 id")
+    locks: dict[str, bool] | None = Field(
+        None, description="可选：一次性提交的阀门锁定状态 {valve_id: locked}，随工单一起冻结"
+    )
+    solution_rank: int = Field(0, ge=0, description="选用的等价方案序号（0=推荐方案）")
+    title: str | None = Field(None, description="工单标题，缺省自动生成")
+
+
+class WorkOrderEventIn(BaseModel):
+    type: str = Field(
+        ..., description="start/close_valve/verify/pause/resume/restore_valve"
+    )
+    idempotency_key: str = Field(
+        ..., min_length=1, max_length=64,
+        description="幂等标识：同一工单内相同 key 的重复提交幂等回放，不重复执行步骤",
+    )
+    expected_status: str = Field(
+        ..., description="前置状态：客户端声明提交时看到的工单状态，不符则拒绝"
+    )
+    valve_id: str | None = Field(None, description="close_valve/restore_valve 事件的阀门 id")
+    note: str | None = Field(None, description="可选备注，随证据一起保存")

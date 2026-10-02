@@ -1,4 +1,4 @@
-"""FastAPI 入口：拓扑查询、阀门锁定、隔离方案计算。"""
+"""FastAPI 入口：拓扑查询、阀门锁定、隔离方案计算、隔离演练工单。"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -9,11 +9,18 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import isolation
+from . import isolation, workorder
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
-from .models import Valve
-from .schemas import IsolationIn, IsolationOut, TopologyOut, ValveLockIn
+from .models import Valve, WorkOrder
+from .schemas import (
+    IsolationIn,
+    IsolationOut,
+    TopologyOut,
+    ValveLockIn,
+    WorkOrderCreateIn,
+    WorkOrderEventIn,
+)
 from .seed import reset_database, seed_database
 
 @asynccontextmanager
@@ -89,6 +96,74 @@ def calc_isolation(body: IsolationIn, db: Session = Depends(get_db)) -> Isolatio
     except isolation.TopologyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return IsolationOut(**payload)
+
+
+# ---------------- 隔离演练工单（仅模拟流程，不连接真实控制系统） ----------------
+
+def _get_order_or_404(db: Session, order_id: str) -> WorkOrder:
+    order = db.get(WorkOrder, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail=f"工单不存在: {order_id}")
+    return order
+
+
+@app.post("/api/workorders", status_code=201)
+def create_work_order(body: WorkOrderCreateIn, db: Session = Depends(get_db)) -> dict[str, object]:
+    """把一次可行隔离计算冻结为演练工单（草稿）。"""
+    seed_database(db)
+    try:
+        order = workorder.create_order(
+            db, body.target_id, body.locks, body.solution_rank, body.title
+        )
+    except workorder.OrderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return workorder.order_payload(db, order, check_stale=False)
+
+
+@app.get("/api/workorders")
+def list_work_orders(db: Session = Depends(get_db)) -> dict[str, object]:
+    seed_database(db)
+    orders = db.scalars(select(WorkOrder).order_by(WorkOrder.created_at.desc())).all()
+    return {
+        "disclaimer": workorder.DISCLAIMER,
+        "orders": [workorder.order_summary(db, o) for o in orders],
+    }
+
+
+@app.get("/api/workorders/{order_id}")
+def get_work_order(order_id: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    """工单详情：冻结快照、计划步骤、模拟视图（NetworkX 重放）、审计事件。
+
+    读取时做活体指纹检查：锁定/拓扑/供给约束若在执行中被改变，
+    工单在此落库为过期（stale），刷新页面即可看到。
+    """
+    order = _get_order_or_404(db, order_id)
+    return workorder.order_payload(db, order)
+
+
+@app.post("/api/workorders/{order_id}/events")
+def post_work_order_event(
+    order_id: str, body: WorkOrderEventIn, db: Session = Depends(get_db)
+) -> dict[str, object]:
+    """提交工单事件（幂等 + 前置状态 + 顺序校验；全部提交均写审计）。"""
+    order = _get_order_or_404(db, order_id)
+    try:
+        ev, duplicate = workorder.apply_event(
+            db,
+            order,
+            body.type,
+            body.idempotency_key,
+            body.expected_status,
+            body.valve_id,
+            body.note,
+        )
+    except workorder.OrderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except workorder.ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    payload = workorder.order_payload(db, order, check_stale=False)
+    payload["last_event"] = {"seq": ev.seq, "result": ev.result, "duplicate": duplicate}
+    return payload
 
 
 # 前端静态资源（ng build 产物）挂在根路径。挂载放在所有 /api 路由之后，

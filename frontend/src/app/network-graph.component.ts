@@ -34,6 +34,9 @@ import { IsolationResult, Topology } from './models';
 export class NetworkGraphComponent implements AfterViewInit, OnChanges, OnDestroy {
   @Input() topology: Topology | null = null;
   @Input() result: IsolationResult | null = null;
+  /** 工单模拟状态：已模拟关闭的阀门与必要供给路径（依据工单冻结快照重放）。 */
+  @Input() simClosed: string[] = [];
+  @Input() simSupply: Record<string, string[] | null> = {};
 
   @ViewChild('cy') cyHost!: ElementRef<HTMLDivElement>;
 
@@ -186,6 +189,15 @@ export class NetworkGraphComponent implements AfterViewInit, OnChanges, OnDestro
           },
         },
         {
+          selector: 'edge.simclose',
+          style: {
+            'line-color': '#f97316',
+            'target-arrow-color': '#f97316',
+            width: 6,
+            color: '#fdba74',
+          },
+        },
+        {
           selector: 'node.onpath',
           style: { 'border-color': '#67e8f9', 'border-width': 3 },
         },
@@ -201,7 +213,7 @@ export class NetworkGraphComponent implements AfterViewInit, OnChanges, OnDestro
     const cy = this.cy;
     const result = this.result;
     const topo = this.topology;
-    if (!cy || !result || !topo) {
+    if (!cy || !topo) {
       return;
     }
 
@@ -212,41 +224,61 @@ export class NetworkGraphComponent implements AfterViewInit, OnChanges, OnDestro
       }
     }
 
-    // 目标设备
-    cy.$(`node#${result.target_id}`).addClass('hl-target');
+    if (result) {
+      // 目标设备
+      cy.$(`node#${result.target_id}`).addClass('hl-target');
 
-    if (result.feasible && result.solutions.length) {
-      const best = result.solutions[0];
-      for (const vid of best.close_valves) {
-        const eid = edgeByValve.get(vid);
-        if (eid) {
-          cy.$(`edge#${eid}`).addClass('close');
+      if (result.feasible && result.solutions.length) {
+        const best = result.solutions[0];
+        for (const vid of best.close_valves) {
+          const eid = edgeByValve.get(vid);
+          if (eid) {
+            cy.$(`edge#${eid}`).addClass('close');
+          }
+        }
+        // 方案后必要供给点的来源路径
+        for (const path of Object.values(best.supply_paths)) {
+          if (!path) {
+            continue;
+          }
+          path.forEach((n) => cy.$(`node#${n}`).addClass('onpath'));
+          for (let i = 0; i < path.length - 1; i++) {
+            cy.edges(`[source = "${path[i]}"][target = "${path[i + 1]}"]`).addClass('supply');
+            cy.edges(`[source = "${path[i + 1]}"][target = "${path[i]}"]`).addClass('supply');
+          }
+        }
+      } else if (!result.feasible) {
+        const mark = (nodePath: string[], cls: string) => {
+          nodePath.forEach((n) => cy.$(`node#${n}`).addClass('onpath'));
+          for (let i = 0; i < nodePath.length - 1; i++) {
+            cy.edges(`[source = "${nodePath[i]}"][target = "${nodePath[i + 1]}"]`).addClass(cls);
+            cy.edges(`[source = "${nodePath[i + 1]}"][target = "${nodePath[i]}"]`).addClass(cls);
+          }
+        };
+        if (result.residual_path) {
+          mark(result.residual_path.nodes, 'residual');
+        }
+        if (result.locked_witness_path) {
+          mark(result.locked_witness_path.nodes, 'witness');
         }
       }
-      // 方案后必要供给点的来源路径
-      for (const path of Object.values(best.supply_paths)) {
-        if (!path) {
-          continue;
-        }
-        path.forEach((n) => cy.$(`node#${n}`).addClass('onpath'));
-        for (let i = 0; i < path.length - 1; i++) {
-          cy.edges(`[source = "${path[i]}"][target = "${path[i + 1]}"]`).addClass('supply');
-          cy.edges(`[source = "${path[i + 1]}"][target = "${path[i]}"]`).addClass('supply');
-        }
+    }
+
+    // 工单模拟状态（核验前即可见）：模拟已关阀门 + 必要供给路径
+    for (const vid of this.simClosed ?? []) {
+      const eid = edgeByValve.get(vid);
+      if (eid) {
+        cy.$(`edge#${eid}`).addClass('simclose');
       }
-    } else if (!result.feasible) {
-      const mark = (nodePath: string[], cls: string) => {
-        nodePath.forEach((n) => cy.$(`node#${n}`).addClass('onpath'));
-        for (let i = 0; i < nodePath.length - 1; i++) {
-          cy.edges(`[source = "${nodePath[i]}"][target = "${nodePath[i + 1]}"]`).addClass(cls);
-          cy.edges(`[source = "${nodePath[i + 1]}"][target = "${nodePath[i]}"]`).addClass(cls);
-        }
-      };
-      if (result.residual_path) {
-        mark(result.residual_path.nodes, 'residual');
+    }
+    for (const path of Object.values(this.simSupply ?? {})) {
+      if (!path) {
+        continue;
       }
-      if (result.locked_witness_path) {
-        mark(result.locked_witness_path.nodes, 'witness');
+      path.forEach((n) => cy.$(`node#${n}`).addClass('onpath'));
+      for (let i = 0; i < path.length - 1; i++) {
+        cy.edges(`[source = "${path[i]}"][target = "${path[i + 1]}"]`).addClass('supply');
+        cy.edges(`[source = "${path[i + 1]}"][target = "${path[i]}"]`).addClass('supply');
       }
     }
   }

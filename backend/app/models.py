@@ -1,7 +1,9 @@
-"""数据库模型：节点（设备/供给点）、管段、阀门。"""
+"""数据库模型：节点（设备/供给点）、管段、阀门、隔离演练工单。"""
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, UniqueConstraint
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -59,3 +61,77 @@ class Segment(Base):
     valve: Mapped["Valve | None"] = relationship(back_populates="segment", uselist=False)
 
     __table_args__ = (UniqueConstraint("upstream_id", "downstream_id", name="uq_segment_endpoints"),)
+
+
+class WorkOrder(Base):
+    """隔离演练工单：把一次隔离计算冻结为可暂停、可核验、可恢复的模拟流程。
+
+    工单只模拟流程：snapshot_json 冻结创建时刻的拓扑/阀态/锁定/供给约束，
+    plan_json 冻结所选方案；后续所有“关阀/核验/复位”都只在冻结快照上推演，
+    绝不改动 Valve 表的真实状态，也不连接真实控制系统。
+    fingerprint 是冻结前提的哈希，执行中前提一旦被改变（锁阀/拓扑/供给约束），
+    工单即过期（stale）并阻止继续，避免沿用旧方案造成假完成。
+    """
+
+    __tablename__ = "work_orders"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    # draft/executing/paused/pending_verification/restoring/closed/stale
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft")
+    resume_status: Mapped[str | None] = mapped_column(String(24), nullable=True)  # 暂停前状态
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    plan_json: Mapped[str] = mapped_column(Text, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    disclaimer: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    steps: Mapped[list["WorkOrderStep"]] = relationship(
+        back_populates="order", cascade="all, delete-orphan", order_by="WorkOrderStep.seq"
+    )
+    events: Mapped[list["WorkOrderEvent"]] = relationship(
+        back_populates="order", cascade="all, delete-orphan", order_by="WorkOrderEvent.seq"
+    )
+
+
+class WorkOrderStep(Base):
+    """工单计划步骤：按序执行，不允许跳步；完成时写入证据（evidence_json）。"""
+
+    __tablename__ = "work_order_steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("work_orders.id"), nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # close_valve/verify/restore_valve
+    valve_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending/done
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    order: Mapped[WorkOrder] = relationship(back_populates="steps")
+
+
+class WorkOrderEvent(Base):
+    """持久化审计日志：每一次事件提交（接受/幂等重复/拒绝）都留痕。
+
+    idempotency_key 由调用方提供；同一工单内相同 key 的已接受事件直接幂等回放，
+    重复提交不会重复执行步骤，但会以 result=duplicate 记录一条审计。
+    """
+
+    __tablename__ = "work_order_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("work_orders.id"), nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)  # 工单内单调递增
+    type: Mapped[str] = mapped_column(String(24), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expected_status: Mapped[str | None] = mapped_column(String(24), nullable=True)  # 前置状态
+    result: Mapped[str] = mapped_column(String(16), nullable=False)  # accepted/duplicate/rejected
+    detail: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    order: Mapped[WorkOrder] = relationship(back_populates="events")

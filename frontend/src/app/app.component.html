@@ -57,12 +57,18 @@
     <!-- 中：拓扑图 -->
     <main class="panel graph-panel">
       <h2>管网拓扑（箭头=介质名义方向，紫虚线=旁路，★=必要供给点）</h2>
-      <app-network-graph [topology]="topology()" [result]="result()" />
+      <app-network-graph
+        [topology]="topology()"
+        [result]="result()"
+        [simClosed]="woSimClosed()"
+        [simSupply]="woSimSupply()"
+      />
       <div class="legend">
         <span><i class="sw close"></i> 候选关闭阀</span>
         <span><i class="sw supply"></i> 方案后供给路径</span>
         <span><i class="sw residual"></i> 残余连通路径</span>
         <span><i class="sw witness"></i> 经锁定阀的见证路径</span>
+        <span><i class="sw simclose"></i> 工单模拟已关阀</span>
       </div>
     </main>
 
@@ -154,6 +160,144 @@
       }
     </aside>
   </div>
+
+  <!-- 隔离演练工单：把一次计算冻结为可暂停、可核验、可恢复的模拟流程 -->
+  @if (result()?.feasible && !workOrder()) {
+    <section class="panel wo-panel">
+      <h2>隔离演练工单</h2>
+      <p class="hint">
+        把当前可行方案冻结为工单：冻结目标、必要供给点、锁定状态、拓扑快照与所选方案，
+        之后按步骤模拟关阀 → 核验 → 复位，全程可暂停/恢复，所有事件留审计。
+      </p>
+      <button class="primary" [disabled]="woBusy()" (click)="createWorkOrder()">
+        生成演练工单（冻结当前方案）
+      </button>
+    </section>
+  }
+
+  @if (workOrder(); as wo) {
+    <section class="panel wo-panel">
+      <h2>
+        隔离演练工单 {{ wo.id }}
+        <span class="status st-{{ wo.status }}">{{ statusLabel(wo.status) }}</span>
+      </h2>
+      <div class="disclaimer">{{ wo.disclaimer }}</div>
+      <p class="hint">
+        目标 <b>{{ wo.target_id }}</b> ｜ 冻结方案：关闭
+        <b>{{ wo.plan.close_valves.join('、') }}</b> ｜ 必要供给点
+        <b>{{ wo.snapshot.essentials.join('、') }}</b> ｜ 快照指纹
+        <code>{{ wo.fingerprint.slice(0, 12) }}…</code>
+      </p>
+
+      @if (wo.status === 'stale') {
+        <div class="bad">
+          ✗ 工单已过期：锁定、拓扑或供给约束在执行中被改变，禁止继续沿用旧方案。
+          已完成步骤与证据保留在审计中，请重新计算并新建工单。
+        </div>
+      }
+      @if (wo.status === 'closed') {
+        <div class="ok">✓ 工单已关闭：全部步骤完成，模拟阀位已复位，证据与审计完整保留。</div>
+      }
+
+      <div class="wo-actions">
+        @if (wo.status === 'draft') {
+          <button class="primary" [disabled]="woBusy()" (click)="woEvent('start')">开始执行</button>
+        }
+        @if (wo.status === 'executing') {
+          @if (nextStep('close_valve'); as st) {
+            <button class="primary" [disabled]="woBusy()" (click)="woEvent('close_valve', st.valve_id!)">
+              模拟关阀 {{ st.valve_id }}（{{ valveName(st.valve_id!) }}）
+            </button>
+          }
+          <button [disabled]="woBusy()" (click)="woEvent('pause')">暂停</button>
+        }
+        @if (wo.status === 'pending_verification') {
+          <button class="primary" [disabled]="woBusy()" (click)="woEvent('verify')">
+            提交核验（NetworkX 复核）
+          </button>
+          <button [disabled]="woBusy()" (click)="woEvent('pause')">暂停</button>
+        }
+        @if (wo.status === 'restoring') {
+          @if (nextStep('restore_valve'); as st) {
+            <button class="primary" [disabled]="woBusy()" (click)="woEvent('restore_valve', st.valve_id!)">
+              模拟复位 {{ st.valve_id }}（{{ valveName(st.valve_id!) }}）
+            </button>
+          }
+          <button [disabled]="woBusy()" (click)="woEvent('pause')">暂停</button>
+        }
+        @if (wo.status === 'paused') {
+          <button class="primary" [disabled]="woBusy()" (click)="woEvent('resume')">
+            恢复工单（回到{{ statusLabel(wo.resume_status ?? '') }}）
+          </button>
+        }
+        <button class="ghost" [disabled]="woBusy()" (click)="refreshWorkOrder()">刷新工单</button>
+        <button class="ghost" (click)="discardWorkOrder()">收起（工单仍保留在服务端）</button>
+      </div>
+
+      <div class="wo-grid">
+        <div>
+          <h3>步骤（按序执行，不可跳步）</h3>
+          <ol class="steps">
+            @for (s of wo.steps; track s.seq) {
+              <li [class.done]="s.status === 'done'">
+                <span class="step-kind">{{ stepLabel(s.kind) }}</span>
+                @if (s.valve_id) {
+                  <b>{{ s.valve_id }}</b> <span>{{ valveName(s.valve_id) }}</span>
+                }
+                @if (s.status === 'done') {
+                  <em class="ok-text">✓ 已完成</em>
+                } @else {
+                  <em class="pending">待执行</em>
+                }
+              </li>
+            }
+          </ol>
+        </div>
+
+        <div>
+          <h3>模拟状态（核验前即可见）</h3>
+          <p class="sim-line">
+            目标隔离：
+            <b [class.ok-text]="wo.simulation.isolation_ok" [class.bad-text]="!wo.simulation.isolation_ok">
+              {{ wo.simulation.isolation_ok ? '已隔离' : '未隔离' }}
+            </b>
+            ｜ 必要供给：
+            <b [class.ok-text]="wo.simulation.essentials_all_supplied" [class.bad-text]="!wo.simulation.essentials_all_supplied">
+              {{ wo.simulation.essentials_all_supplied ? '全部可达' : '存在断供' }}
+            </b>
+            ｜ 模拟已关：{{ wo.simulation.simulated_closed_valves.join('、') || '无' }}
+          </p>
+          @for (p of wo.snapshot.essentials; track p) {
+            <div class="supply">
+              ★ <b>{{ p }}</b> 来源路径：
+              <code>{{ wo.simulation.supply_paths[p]?.join(' → ') || '— 断供 —' }}</code>
+            </div>
+          }
+
+          @if (verifyEvidence(wo); as ev) {
+            <h3>核验证据</h3>
+            <div class="ok">
+              ✓ NetworkX 复核通过（基于冻结快照 + 已完成步骤）：目标已隔离，
+              全部必要供给点仍有来源；指纹 {{ wo.fingerprint.slice(0, 12) }}…
+            </div>
+          }
+        </div>
+
+        <div>
+          <h3>审计事件（{{ wo.events.length }} 条，含被拒绝/幂等重复）</h3>
+          <ul class="events">
+            @for (e of wo.events; track e.seq) {
+              <li class="ev-{{ e.result }}">
+                <b>#{{ e.seq }}</b> {{ e.type }}
+                <span class="ev-result">{{ e.result }}</span>
+                <span class="ev-detail">{{ e.detail }}</span>
+              </li>
+            }
+          </ul>
+        </div>
+      </div>
+    </section>
+  }
 
   <footer>
     演示拓扑：来源 SRC — N1 — N2 — 设备T — N3；N2-BP-N3 旁路与 T 并联；
